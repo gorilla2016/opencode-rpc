@@ -1,0 +1,80 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            name: opencode-rpc-win64.exe
+          - os: windows-latest
+            arch: x86
+            name: opencode-rpc-win32.exe
+          - os: ubuntu-22.04
+            arch: x64
+            name: opencode-rpc-linux-x64
+          - os: macos-14
+            arch: arm64
+            name: opencode-rpc-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+
+      - name: Set up Python (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build binary
+        shell: bash
+        run: |
+          pyinstaller --onefile --name opencode-rpc opencode-rpc.py
+          if [ -f dist/opencode-rpc.exe ]; then
+            mv dist/opencode-rpc.exe "dist/${{ matrix.name }}"
+          else
+            mv dist/opencode-rpc "dist/${{ matrix.name }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+
+  release:
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

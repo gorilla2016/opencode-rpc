@@ -38,13 +38,26 @@ The mascot changes with the state (`working`, `thinking`, `done`, `idle`, `error
 ## How it works
 
 It reads opencode's local SQLite store **read-only** (`%USERPROFILE%\.local\share\opencode\opencode.db`):
-`session` (title, model, tokens, timestamps), `part` (the newest tool call + its input), and `message` (last user turn for the timer). Nothing is written to the DB, and no telemetry is sent anywhere except Discord's local IPC pipe.
+`session` (title, model, tokens, timestamps), `part` (the newest tool call + its input), and `message` (last user turn for the timer). Nothing is written to the DB, and no telemetry is sent anywhere except Discord's local IPC (named pipe on Windows, Unix socket on Linux/macOS).
+
+## Download
+
+Grab a prebuilt binary from the [Releases](https://github.com/gorilla2016/opencode-rpc/releases) page:
+
+- `opencode-rpc-win64.exe` — Windows 64-bit
+- `opencode-rpc-win32.exe` — Windows 32-bit
+- `opencode-rpc-linux-x64` — Linux 64-bit
+- `opencode-rpc-macos-arm64` — macOS (Apple Silicon)
+
+Keep Discord **Desktop** open and run it. On Linux/macOS: `chmod +x <file> && ./<file>`.
 
 ## Requirements
 
-- Windows (uses Discord's named pipe `\\.\pipe\discord-ipc-*`)
-- Python 3.8+
+- Windows, Linux, or macOS
+- Python 3.8+ (or use a prebuilt binary above)
 - Discord **Desktop** running (browser Discord has no IPC)
+
+On Windows it uses the named pipe `\\.\pipe\discord-ipc-*`; on Linux/macOS it uses the Unix socket in `$XDG_RUNTIME_DIR` (or `/tmp`).
 
 ## Run
 
@@ -109,6 +122,15 @@ Or host an animated GIF anywhere public and put its URL in `large_image` / `asse
 ## Mascot
 
 `make_mascot.py` generates the animated terminal-creature GIFs in `assets/` and uploads them (to catbox by default) so Discord can fetch them as external assets. The generated `assets/*.gif` are included in this repo.
+
+## Build from source
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name opencode-rpc opencode-rpc.py
+```
+
+The binary lands in `dist/`. CI builds win64, win32, linux-x64 and macos-arm64 on every `v*` tag and attaches them to the release (`.github/workflows/build.yml`).
 
 ## License
 

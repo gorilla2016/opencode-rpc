@@ -397,38 +397,69 @@ def build_activity(snap, cfg, now):
 
 
 class DiscordIPC:
-    """Single-threaded Discord IPC. Reads are PeekNamedPipe-polled so a blocking
-    read never holds the fd lock and stalls writes (the old bug)."""
+    """Single-threaded Discord IPC for Windows named pipes and Unix sockets.
+
+    Windows uses PeekNamedPipe so a blocking read never holds the fd lock and
+    stalls writes. Unix uses select() on the socket for the same reason.
+    """
 
     def __init__(self, client_id):
         self.client_id = str(client_id)
         self.f = None
         self.fd = None
+        self.sock = None
         self.connected = False
         self.close_reason = None
-        if os.name == "nt":
+        self._unix = os.name != "nt"
+        if not self._unix:
             import ctypes
             import msvcrt
             self._ctypes = ctypes
             self._msvcrt = msvcrt
             self._k32 = ctypes.windll.kernel32
 
-    def _pipe_path(self, i):
-        return rf"\\.\pipe\discord-ipc-{i}"
+    def _candidates(self):
+        if self._unix:
+            bases = []
+            for var in ("XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"):
+                b = os.environ.get(var)
+                if b and b not in bases:
+                    bases.append(b)
+            for b in ("/tmp", "/var/tmp"):
+                if b not in bases:
+                    bases.append(b)
+            return [os.path.join(b, f"discord-ipc-{i}") for b in bases for i in range(10)]
+        return [rf"\\.\pipe\discord-ipc-{i}" for i in range(10)]
 
     def connect(self):
         self.close()
-        f = None
-        for i in range(10):
-            try:
-                f = open(self._pipe_path(i), "r+b", buffering=0)
-                break
-            except OSError:
-                f = None
-        if not f:
-            raise ConnectionError("Discord IPC pipe not found (is Discord Desktop running?)")
-        self.f = f
-        self.fd = f.fileno()
+        if self._unix:
+            import socket
+            for path in self._candidates():
+                if not os.path.exists(path):
+                    continue
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    s.connect(path)
+                    self.sock = s
+                    break
+                except OSError:
+                    s.close()
+                    self.sock = None
+            if not self.sock:
+                raise ConnectionError("Discord IPC socket not found (is Discord running?)")
+        else:
+            f = None
+            for path in self._candidates():
+                try:
+                    f = open(path, "r+b", buffering=0)
+                    break
+                except OSError:
+                    f = None
+            if not f:
+                raise ConnectionError("Discord IPC pipe not found (is Discord Desktop running?)")
+            self.f = f
+            self.fd = f.fileno()
         self.connected = True
         self.close_reason = None
         self._send(0, {"v": 1, "client_id": self.client_id})
@@ -443,8 +474,13 @@ class DiscordIPC:
         raise ConnectionError("handshake timeout")
 
     def _peek(self):
-        if os.name != "nt":
-            return 1
+        if self._unix:
+            import select
+            try:
+                r, _, _ = select.select([self.sock], [], [], 0)
+                return 1 if r else 0
+            except Exception:
+                return 0
         try:
             h = self._msvcrt.get_osfhandle(self.fd)
             avail = self._ctypes.c_ulong(0)
@@ -461,9 +497,12 @@ class DiscordIPC:
                     raise ConnectionError("closed")
                 time.sleep(0.02)
                 continue
-            chunk = os.read(self.fd, n - len(buf))
+            if self._unix:
+                chunk = self.sock.recv(n - len(buf))
+            else:
+                chunk = os.read(self.fd, n - len(buf))
             if not chunk:
-                raise EOFError("discord pipe closed")
+                raise EOFError("discord ipc closed")
             buf += chunk
         return buf
 
@@ -497,10 +536,16 @@ class DiscordIPC:
         return self.connected
 
     def _send(self, op, obj):
-        if self.fd is None:
-            raise ConnectionError("not connected")
         data = json.dumps(obj, separators=(",", ":")).encode("utf-8")
-        os.write(self.fd, struct.pack("<II", op, len(data)) + data)
+        packet = struct.pack("<II", op, len(data)) + data
+        if self._unix:
+            if not self.sock:
+                raise ConnectionError("not connected")
+            self.sock.sendall(packet)
+        else:
+            if self.fd is None:
+                raise ConnectionError("not connected")
+            os.write(self.fd, packet)
 
     def set_activity(self, activity):
         if not self.connected:
@@ -514,10 +559,16 @@ class DiscordIPC:
     def close(self):
         self.connected = False
         try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+        try:
             if self.f:
                 self.f.close()
         except Exception:
             pass
+        self.sock = None
         self.f = None
         self.fd = None
 
