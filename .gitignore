@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# local test output
+_test.out
+_test.err
+*.log
+
+# mascot preview
+assets/_preview.png
