@@ -43,7 +43,10 @@ DEFAULTS = {
     "active_window": 900,
     "show_tokens": True,
     "privacy": "public",
-    "detail_level": "minimal",  # minimal | normal | full (full leaks commands)
+    "detail_level": "minimal",
+    "require_opencode": True,     # only show presence while opencode is running
+    "exit_when_closed": False,    # exit the daemon when opencode closes
+    "process_check_interval": 5,  # seconds between process checks
     "db_path": DB_PATH,
 }
 
@@ -573,6 +576,34 @@ class DiscordIPC:
         self.fd = None
 
 
+def opencode_running():
+    """True if an opencode process is running. Fails open on errors."""
+    import subprocess
+    try:
+        if os.name == "nt":
+            flags = 0x08000000  # CREATE_NO_WINDOW
+            try:
+                out = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq opencode.exe", "/NH"],
+                    capture_output=True, text=True, timeout=6,
+                    creationflags=flags).stdout.lower()
+                if "opencode.exe" in out:
+                    return True
+            except Exception:
+                pass
+            return False
+        try:
+            r = subprocess.run(["pgrep", "-x", "opencode"],
+                               capture_output=True, text=True, timeout=6)
+            if r.returncode == 0 and r.stdout.strip():
+                return True
+        except Exception:
+            pass
+        return False
+    except Exception:
+        return True
+
+
 def main():
     cfg = load_config()
     once = "--once" in sys.argv
@@ -583,8 +614,25 @@ def main():
     last_sig = None
     last_sent = 0.0
     last_update = 0.0
+    last_proc_check = 0.0
+    opencode_alive = True
     while True:
         try:
+            now = time.time()
+            if cfg.get("require_opencode", True):
+                if now - last_proc_check >= cfg.get("process_check_interval", 5):
+                    opencode_alive = opencode_running()
+                    last_proc_check = now
+                if not opencode_alive:
+                    if ipc.connected:
+                        ipc.close()
+                        print("[opencode-rpc] opencode not running - presence cleared")
+                        last_sig = None
+                    if once or cfg.get("exit_when_closed", False):
+                        print("[opencode-rpc] opencode not running - exiting")
+                        return
+                    time.sleep(3)
+                    continue
             if not ipc.connected:
                 ipc.close()
                 ipc.connect()
@@ -593,7 +641,6 @@ def main():
             ipc.poll()
             if not ipc.connected:
                 raise ConnectionError(f"disconnected: {ipc.close_reason}")
-            now = time.time()
             if now - last_update >= max(1, int(cfg.get("update_interval", 15))):
                 last_update = now
                 snap = store.snapshot()

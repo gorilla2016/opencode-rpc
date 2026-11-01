@@ -77,7 +77,9 @@ One-shot test:
 python opencode-rpc.py --once
 ```
 
-Install login autostart:
+Presence only appears while an **`opencode` process is running**; it clears when opencode closes (and the daemon won't connect to Discord until opencode is open). Autostart is **optional and off by default** — you do not need to run it at Windows startup.
+
+Optional login autostart:
 
 ```bat
 install-autostart.cmd
@@ -107,6 +109,9 @@ Created at `%USERPROFILE%\.opencode-rpc\config.json`:
 | `show_tokens` | Include model + output tokens. |
 | `privacy` | `public` shows the session title; `private` shows "a project". |
 | `detail_level` | `minimal` (default) shows the action + tool name + the edited/read file (shell commands stay generic); `normal` adds the shell program name; `full` shows the actual command/pattern/url (leaks details). |
+| `require_opencode` | Only show presence while an `opencode` process is running (default `true`). |
+| `exit_when_closed` | Exit the daemon when opencode closes (default `false` = keep waiting). |
+| `process_check_interval` | Seconds between process checks (default `5`). |
 | `db_path` | Override the opencode DB path. |
 
 ### Make it say "opencode" with your own logo
