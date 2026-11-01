@@ -21,6 +21,8 @@ HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".opencode-rpc")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 DB_PATH = os.path.join(HOME, ".local", "share", "opencode", "opencode.db")
+PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
+_OWNS_PID = False
 
 # Little terminal-creature mascot, animated per state (hosted, public HTTPS).
 ASSETS = {
@@ -45,7 +47,7 @@ DEFAULTS = {
     "privacy": "public",
     "detail_level": "minimal",
     "require_opencode": True,     # only show presence while opencode is running
-    "exit_when_closed": False,    # exit the daemon when opencode closes
+    "exit_when_closed": True,     # exit the daemon when opencode closes
     "process_check_interval": 5,  # seconds between process checks
     "db_path": DB_PATH,
 }
@@ -576,6 +578,14 @@ class DiscordIPC:
         self.fd = None
 
 
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
 def opencode_running():
     """True if an opencode process is running. Fails open on errors."""
     import subprocess
@@ -605,12 +615,25 @@ def opencode_running():
 
 
 def main():
+    global _OWNS_PID
     cfg = load_config()
     once = "--once" in sys.argv
     store = Store(cfg.get("db_path") or DB_PATH)
     ipc = DiscordIPC(cfg["client_id"])
     print(f"[opencode-rpc] db={store.db_path}")
     print(f"[opencode-rpc] client_id={cfg['client_id']} interval={cfg['update_interval']}s")
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        if os.path.exists(PID_FILE):
+            old = int((open(PID_FILE, "r").read().strip() or "0"))
+            if old and old != os.getpid() and _pid_alive(old):
+                print(f"[opencode-rpc] already running (pid {old})")
+                return
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+        _OWNS_PID = True
+    except Exception:
+        pass
     last_sig = None
     last_sent = 0.0
     last_update = 0.0
@@ -683,3 +706,9 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n[opencode-rpc] stopped")
+    finally:
+        if _OWNS_PID:
+            try:
+                os.remove(PID_FILE)
+            except Exception:
+                pass

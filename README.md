@@ -51,6 +51,17 @@ Grab a prebuilt binary from the [Releases](https://github.com/gorilla2016/openco
 
 Keep Discord **Desktop** open and run it. On Linux/macOS: `chmod +x <file> && ./<file>`.
 
+## Start with opencode (recommended)
+
+Copy the plugin to opencode's global plugin directory:
+
+```powershell
+mkdir "$env:USERPROFILE\.config\opencode\plugins" -Force
+copy integrations\opencode-rpc.js "$env:USERPROFILE\.config\opencode\plugins\opencode-rpc.js"
+```
+
+opencode loads it at startup and spawns the daemon; the daemon exits when opencode closes (and a PID lock prevents double-launching). No Windows autostart needed — it only runs while opencode is open. Restart opencode once after installing the plugin.
+
 ## Requirements
 
 - Windows, Linux, or macOS
@@ -110,7 +121,7 @@ Created at `%USERPROFILE%\.opencode-rpc\config.json`:
 | `privacy` | `public` shows the session title; `private` shows "a project". |
 | `detail_level` | `minimal` (default) shows the action + tool name + the edited/read file (shell commands stay generic); `normal` adds the shell program name; `full` shows the actual command/pattern/url (leaks details). |
 | `require_opencode` | Only show presence while an `opencode` process is running (default `true`). |
-| `exit_when_closed` | Exit the daemon when opencode closes (default `false` = keep waiting). |
+| `exit_when_closed` | Exit the daemon when opencode closes (default `true`). |
 | `process_check_interval` | Seconds between process checks (default `5`). |
 | `db_path` | Override the opencode DB path. |
 
