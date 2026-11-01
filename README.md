@@ -19,6 +19,22 @@ Running: npm test · deepseek-v4.1-flash · 142.5k output tokens
 - elapsed timer for the current turn
 - optional custom title, privacy mode, autostart
 
+## States
+
+| Card | When |
+|---|---|
+| `Running a command` | a shell/exec tool is running (`normal`/`full` add the program/command) |
+| `Editing <file>` / `Reading <file>` | file tools (path relative to the session dir) |
+| `Using <tool>` | any other tool, MCP included |
+| `Thinking` | reasoning, or a fresh prompt with no output yet |
+| `Responding` | assistant is streaming text |
+| `Waiting on you` | a `question`/permission request is pending |
+| `Done` | just finished a turn (brief, then Idle) |
+| `Idle` | finished, waiting for your next task |
+| `Error in <tool>` | the last tool failed |
+
+The mascot changes with the state (`working`, `thinking`, `done`, `idle`, `error`).
+
 ## How it works
 
 It reads opencode's local SQLite store **read-only** (`%USERPROFILE%\.local\share\opencode\opencode.db`):

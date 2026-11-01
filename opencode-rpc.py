@@ -123,7 +123,7 @@ class Store:
         try:
             cur = con.cursor()
             row = cur.execute(
-                "SELECT id,title,directory,path,model,agent,tokens_output,"
+                "SELECT id,project_id,title,directory,path,model,agent,tokens_output,"
                 "cost,time_created,time_updated FROM session "
                 "WHERE time_archived IS NULL OR time_archived = 0 "
                 "ORDER BY time_updated DESC LIMIT 1"
@@ -133,17 +133,26 @@ class Store:
             sid = row["id"]
 
             last_user_ms = None
+            last_msg_role = None
+            last_msg_ms = None
             for m in cur.execute(
                 "SELECT data,time_created FROM message WHERE session_id=? "
                 "ORDER BY time_created DESC LIMIT 40", (sid,)
             ):
                 d = parse_json(m["data"])
-                if isinstance(d, dict) and d.get("role") == "user":
+                if not isinstance(d, dict):
+                    continue
+                if last_msg_role is None:
+                    last_msg_role = d.get("role")
+                    last_msg_ms = m["time_created"]
+                if d.get("role") == "user":
                     last_user_ms = m["time_created"]
                     break
 
             last_part = None
             last_tool = None
+            last_part_ms = None
+            last_part_end = None
             for p in cur.execute(
                 "SELECT data,time_created FROM part WHERE session_id=? "
                 "ORDER BY time_created DESC LIMIT 40", (sid,)
@@ -153,11 +162,26 @@ class Store:
                     continue
                 if last_part is None:
                     last_part = d
+                    last_part_ms = p["time_created"]
+                    if d.get("type") == "text":
+                        last_part_end = (d.get("time") or {}).get("end")
                 if d.get("type") == "tool" and last_tool is None:
                     last_tool = d
                     break
+
+            pending_permission = 0
+            try:
+                if row["project_id"]:
+                    pending_permission = cur.execute(
+                        "SELECT COUNT(*) FROM permission WHERE project_id=?",
+                        (row["project_id"],),
+                    ).fetchone()[0]
+            except Exception:
+                pass
+
             return {
                 "id": sid,
+                "project_id": row["project_id"],
                 "title": row["title"],
                 "directory": row["directory"],
                 "model": model_name(row["model"]),
@@ -165,8 +189,13 @@ class Store:
                 "time_created": row["time_created"],
                 "time_updated": row["time_updated"],
                 "last_user_ms": last_user_ms,
+                "last_msg_role": last_msg_role,
+                "last_msg_ms": last_msg_ms,
                 "last_part": last_part,
+                "last_part_ms": last_part_ms,
+                "last_part_end": last_part_end,
                 "last_tool": last_tool,
+                "pending_permission": pending_permission,
             }
         except Exception as e:
             if not self._warned:
@@ -279,71 +308,89 @@ def describe_tool(part, cfg, base_dir=""):
     return "Using a tool" if private else f"Using {tool}"
 
 
-def visual_state(snap):
-    lt = snap.get("last_tool")
+def _idle_line(snap, cfg):
+    model = snap.get("model") or ""
+    toks = f"{fmt_tokens(snap.get('tokens_output') or 0)} output tokens" if cfg.get("show_tokens", True) else ""
+    return " · ".join([p for p in (model, toks) if p])[:128]
+
+
+def compute_state(snap, cfg, now):
+    """Return {visual, details, line, active} for the current agent state."""
+    lt = snap.get("last_tool") or {}
     lp = snap.get("last_part") or {}
-    if lt:
-        st = (lt.get("state") or {}).get("status")
-        if st == "running":
-            return "working"
-        if st == "error":
-            return "error"
-    if isinstance(lp, dict):
-        t = lp.get("type")
-        if t == "reasoning":
-            return "thinking"
-        if t == "text":
-            return "working"
-    return "idle"
+    ltype = lp.get("type") if isinstance(lp, dict) else None
+    tool = str(lt.get("tool") or "").lower() if lt else ""
+    status = (lt.get("state") or {}).get("status") if lt else None
+    label = project_label(snap, cfg)
+    pending = int(snap.get("pending_permission") or 0)
+    role = snap.get("last_msg_role")
+    idle_line = _idle_line(snap, cfg)
+
+    # 1) waiting on the user (question tool or a pending permission)
+    if (status == "running" and tool in ("question", "ask", "askuser", "permission")) or pending > 0:
+        return {"visual": "thinking", "details": "Waiting on you",
+                "line": "Needs your input", "active": False}
+
+    # 2) a tool is actively running
+    if status == "running":
+        desc = describe_tool(lt, cfg, snap.get("directory") or "")
+        return {"visual": "working", "details": f"Working in {label}",
+                "line": desc or "Working", "active": True}
+    if status == "error":
+        return {"visual": "error", "details": f"Working in {label}",
+                "line": f"Error in {tool or 'tool'}", "active": False}
+
+    # 3) reasoning / streaming text
+    last_ms = snap.get("last_part_ms") or snap.get("last_msg_ms") or snap.get("time_updated") or 0
+    age = now - (last_ms / 1000.0)
+    if ltype == "reasoning" and age < 120:
+        return {"visual": "thinking", "details": f"Working in {label}",
+                "line": "Thinking", "active": True}
+    if ltype == "text":
+        ended = snap.get("last_part_end")
+        if not ended and age < 120:
+            return {"visual": "working", "details": f"Working in {label}",
+                    "line": "Responding", "active": True}
+
+    # 4) turn finished -> brief Done, then Idle
+    if role == "assistant":
+        done_ms = (snap.get("last_part_end") or snap.get("last_part_ms")
+                   or snap.get("last_msg_ms") or snap.get("time_updated") or 0)
+        done_age = now - (done_ms / 1000.0)
+        if done_age < 20:
+            return {"visual": "done", "details": "Done", "line": idle_line, "active": False}
+        return {"visual": "idle", "details": "Idle",
+                "line": idle_line or "Waiting for your next task", "active": False}
+
+    # 5) user just sent a prompt, agent hasn't produced output yet
+    if role == "user":
+        return {"visual": "thinking", "details": f"Working in {label}",
+                "line": "Thinking", "active": True}
+
+    return {"visual": "idle", "details": "Idle",
+            "line": idle_line or "Waiting for your next task", "active": False}
 
 
 def build_activity(snap, cfg, now):
-    tokens = snap["tokens_output"]
-    model = snap["model"]
-    last_tool = snap.get("last_tool")
-    last_part = snap.get("last_part") or {}
-    visual = visual_state(snap)
-
-    parts = []
-    active = visual in ("working", "thinking")
-    if last_tool:
-        desc = describe_tool(last_tool, cfg, snap.get("directory") or "")
-        status = (last_tool.get("state") or {}).get("status")
-        if status == "error":
-            parts.append(f"Error in {last_tool.get('tool') or 'tool'}")
-        else:
-            parts.append(desc or "Working")
-    elif isinstance(last_part, dict) and last_part.get("type") == "reasoning":
-        parts.append("Thinking")
-    elif isinstance(last_part, dict) and last_part.get("type") == "text":
-        parts.append("Responding")
-
-    if cfg.get("show_tokens", True):
-        parts.append(model)
-        parts.append(f"{fmt_tokens(tokens)} output tokens")
-    else:
-        parts.append(model)
-
-    state = " · ".join([p for p in parts if p])[:128]
-    details = f"Working in {project_label(snap, cfg)}"[:128]
-
-    updated_s = (snap.get("time_updated") or 0) / 1000.0
-    idle = (not active) and (now - updated_s) > cfg.get("active_window", 900)
-    if idle:
-        visual = "idle"
-
+    st = compute_state(snap, cfg, now)
+    details = st["details"][:128]
+    line = (st["line"] or "")[:128]
+    if cfg.get("show_tokens", True) and st["visual"] not in ("idle", "done"):
+        tail = f"{snap.get('model') or ''} · {fmt_tokens(snap.get('tokens_output') or 0)} output tokens"
+        line = (line + " · " + tail) if line else tail
     activity = {
         "name": cfg["activity_name"],
         "type": 3,
-        "details": "Idle" if idle else details,
-        "state": state,
+        "details": details,
+        "state": line[:128],
     }
-    if not idle:
+    if st["active"]:
         start_ms = snap.get("last_user_ms") or snap.get("time_created") or snap.get("time_updated")
         if start_ms:
             activity["timestamps"] = {"start": int(start_ms / 1000)}
-
-    image = cfg.get("large_image") or (cfg.get("assets") or {}).get(visual) or (cfg.get("assets") or {}).get("idle")
+    image = (cfg.get("large_image")
+             or (cfg.get("assets") or {}).get(st["visual"])
+             or (cfg.get("assets") or {}).get("idle"))
     if image:
         activity["assets"] = {"large_image": image, "large_text": cfg.get("large_text", "opencode")}
     return activity
