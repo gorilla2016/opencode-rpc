@@ -77,7 +77,7 @@ Created at `%USERPROFILE%\.opencode-rpc\config.json`:
 | `active_window` | Seconds of inactivity before the card shows `Idle`. |
 | `show_tokens` | Include model + output tokens. |
 | `privacy` | `public` shows the session title; `private` shows "a project". |
-| `detail_level` | `minimal` (default) shows actions/tool names only; `normal` adds program/file names; `full` shows the actual command/pattern/url (leaks details). |
+| `detail_level` | `minimal` (default) shows the action + tool name + the edited/read file (shell commands stay generic); `normal` adds the shell program name; `full` shows the actual command/pattern/url (leaks details). |
 | `db_path` | Override the opencode DB path. |
 
 ### Make it say "opencode" with your own logo

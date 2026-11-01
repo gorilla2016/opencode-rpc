@@ -201,12 +201,22 @@ def _base(p):
     return os.path.basename(p.replace("\\", "/").rstrip("/"))
 
 
-def describe_tool(part, cfg):
+def _relpath(p, base):
+    if not p:
+        return ""
+    p = p.replace("\\", "/")
+    base = (base or "").replace("\\", "/").rstrip("/")
+    if base and p.lower().startswith(base.lower() + "/"):
+        return p[len(base) + 1:]
+    return os.path.basename(p.rstrip("/"))
+
+
+def describe_tool(part, cfg, base_dir=""):
     """Turn the newest tool part into a short, non-leaky line.
 
     detail_level:
-      minimal (default) - action + tool name only, no args/paths/queries
-      normal            - adds program name / file basename (no full command)
+      minimal (default) - action + tool name only, no args; files still shown
+      normal            - adds program name for shell commands
       full              - full command/pattern/url (opt-in)
     """
     if not isinstance(part, dict):
@@ -233,15 +243,16 @@ def describe_tool(part, cfg):
 
     if tl in ("edit", "write", "patch", "multiedit", "apply_patch"):
         fp = inp.get("filePath") or inp.get("path") or ""
-        if private or level == "minimal" or not fp:
+        if private or not fp:
             return "Editing a file"
-        return f"Editing {_base(fp)}"
+        verb = "Writing" if tl in ("write",) else "Editing"
+        return f"{verb} {_relpath(fp, base_dir)}"
 
     if tl == "read":
         fp = inp.get("filePath") or inp.get("path") or ""
-        if private or level == "minimal" or not fp:
+        if private or not fp:
             return "Reading a file"
-        return f"Reading {_base(fp)}"
+        return f"Reading {_relpath(fp, base_dir)}"
 
     if tl in ("grep", "glob", "search"):
         q = inp.get("pattern") or inp.get("query") or inp.get("include") or ""
@@ -296,7 +307,7 @@ def build_activity(snap, cfg, now):
     parts = []
     active = visual in ("working", "thinking")
     if last_tool:
-        desc = describe_tool(last_tool, cfg)
+        desc = describe_tool(last_tool, cfg, snap.get("directory") or "")
         status = (last_tool.get("state") or {}).get("status")
         if status == "error":
             parts.append(f"Error in {last_tool.get('tool') or 'tool'}")
